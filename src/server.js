@@ -17,10 +17,10 @@ const supabaseKey = process.env.SUPABASE_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 // Instagram API configuration
-const INSTAGRAM_API_URL = 'https://api.scrapecreators.com/v1/instagram/user/posts';
+const INSTAGRAM_API_URL = 'https://api.scrapecreators.com/v1/instagram/profile';
 const INSTAGRAM_API_KEY = process.env.INSTAGRAM_API_KEY;
 
-// Endpoint to fetch Instagram user posts
+// Endpoint to fetch Instagram user profile and posts
 app.get('/api/instagram/:username', async (req, res) => {
   try {
     const { username } = req.params;
@@ -32,70 +32,103 @@ app.get('/api/instagram/:username', async (req, res) => {
         'x-api-key': INSTAGRAM_API_KEY
       },
       params: {
-        handle: username,
-        cursor: cursor || undefined
+        handle: username
       }
     });
     
-    const { posts, cursor: nextCursor } = response.data;
+    const userData = response.data.data.user;
+    const postsData = userData.edge_owner_to_timeline_media;
+    const posts = postsData.edges.map(edge => edge.node);
+    const nextCursor = postsData.page_info.end_cursor;
     
-    // Process and store posts in Supabase
+    // Process and store profile and posts in Supabase
     if (posts && posts.length > 0) {
-      await storePostsInDatabase(posts, username);
+      await storeProfileAndPostsInDatabase(userData, posts, username);
     }
     
     // Return the response
     res.json({
       success: true,
       data: {
+        user: userData,
         posts,
         cursor: nextCursor
       }
     });
   } catch (error) {
-    console.error('Error fetching Instagram posts:', error.message);
+    console.error('Error fetching Instagram profile:', error.message);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch Instagram posts',
+      error: 'Failed to fetch Instagram profile',
       message: error.message
     });
   }
 });
 
-// Function to store posts in Supabase
-async function storePostsInDatabase(posts, username) {
+// Function to store profile and posts in Supabase
+async function storeProfileAndPostsInDatabase(userData, posts, username) {
   try {
-    for (const post of posts) {
-      const { node } = post;
-      
-      // Check if profile exists, if not create it
-      const { data: profileData } = await supabase
+    // Check if profile exists, if not create it
+    const { data: profileData } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('username', username)
+      .single();
+    
+    let profileId;
+    
+    if (!profileData) {
+      // Create new profile with data from the API
+      const { data: newProfile } = await supabase
         .from('profiles')
+        .insert({
+          username,
+          full_name: userData.full_name || '',
+          biography: userData.biography || '',
+          profile_data: userData ? JSON.stringify(userData) : null,
+          profile_type: 'instagram',
+          is_private: userData.is_private || false,
+          followers_count: userData.edge_followed_by?.count || 0,
+          following_count: userData.edge_follow?.count || 0,
+          is_verified: userData.is_verified || false,
+          is_car_profile: false,
+          last_updated: new Date().toISOString()
+        })
         .select('id')
-        .eq('username', username)
         .single();
       
-      let profileId;
+      profileId = newProfile.id;
+    } else {
+      // Update existing profile
+      await supabase
+        .from('profiles')
+        .update({
+          full_name: userData.full_name || '',
+          biography: userData.biography || '',
+          profile_data: userData ? JSON.stringify(userData) : null,
+          is_private: userData.is_private || false,
+          followers_count: userData.edge_followed_by?.count || 0,
+          following_count: userData.edge_follow?.count || 0,
+          is_verified: userData.is_verified || false,
+          last_updated: new Date().toISOString()
+        })
+        .eq('id', profileData.id);
       
-      if (!profileData) {
-        // Create new profile
-        const { data: newProfile } = await supabase
-          .from('profiles')
-          .insert({
-            username,
-            profile_type: 'instagram',
-            is_private: false,
-            followers_count: 0,
-            following_count: 0,
-            is_verified: false,
-            is_car_profile: false
-          })
-          .select('id')
-          .single();
-        
-        profileId = newProfile.id;
-      } else {
-        profileId = profileData.id;
+      profileId = profileData.id;
+    }
+    
+    // Process each post
+    for (const post of posts) {
+      // Check if post already exists to avoid duplicates
+      const { data: existingPost } = await supabase
+        .from('processed_nodes')
+        .select('id')
+        .eq('id', post.id)
+        .single();
+      
+      if (existingPost) {
+        console.log(`Post ${post.id} already exists, skipping...`);
+        continue;
       }
       
       // Insert post data
@@ -103,32 +136,32 @@ async function storePostsInDatabase(posts, username) {
         .from('posts')
         .insert({
           profile_id: profileId,
-          type: node.__typename.replace('Graph', '').toLowerCase(),
-          shortcode: node.shortcode,
-          display_url: node.display_url,
-          timestamp: node.taken_at_timestamp,
-          caption: node.edge_media_to_caption?.edges[0]?.node?.text || null,
-          location: node.location ? JSON.stringify(node.location) : null,
-          likes_count: node.edge_liked_by?.count || 0,
+          type: post.__typename.replace('Graph', '').toLowerCase(),
+          shortcode: post.shortcode,
+          display_url: post.display_url,
+          timestamp: post.taken_at_timestamp,
+          caption: post.edge_media_to_caption?.edges[0]?.node?.text || null,
+          location: post.location ? JSON.stringify(post.location) : null,
+          likes_count: post.edge_liked_by?.count || 0,
           username
         })
         .select('id')
         .single();
       
       // If it's a post with media, store media information
-      if (node.is_video) {
+      if (post.is_video) {
         await supabase
           .from('post_media')
           .insert({
             post_id: postData.id,
             type: 'video',
-            display_url: node.video_url || node.display_url,
+            display_url: post.video_url || post.display_url,
             media_order: 0,
             username
           });
-      } else if (node.edge_sidecar_to_children) {
+      } else if (post.edge_sidecar_to_children) {
         // Handle carousel posts
-        const children = node.edge_sidecar_to_children.edges;
+        const children = post.edge_sidecar_to_children.edges;
         for (let i = 0; i < children.length; i++) {
           const child = children[i].node;
           await supabase
@@ -148,7 +181,7 @@ async function storePostsInDatabase(posts, username) {
           .insert({
             post_id: postData.id,
             type: 'image',
-            display_url: node.display_url,
+            display_url: post.display_url,
             media_order: 0,
             username
           });
@@ -158,14 +191,14 @@ async function storePostsInDatabase(posts, username) {
       await supabase
         .from('processed_nodes')
         .insert({
-          id: node.id,
+          id: post.id,
           username
         });
     }
     
-    console.log(`Successfully stored ${posts.length} posts for user ${username}`);
+    console.log(`Successfully stored profile and ${posts.length} posts for user ${username}`);
   } catch (error) {
-    console.error('Error storing posts in database:', error);
+    console.error('Error storing profile and posts in database:', error);
     throw error;
   }
 }
