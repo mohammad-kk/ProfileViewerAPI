@@ -39,12 +39,13 @@ Run
 npm install
 Start the server:
 ```
-Run
 npm start
+```
 For development with auto-reload:
-
-
+```
 npm run dev
+```
+
 API Endpoints
 Get Instagram Profile and Posts
 plaintext
@@ -56,15 +57,10 @@ username (path parameter): Instagram username
 cursor (query parameter, optional): Pagination cursor for fetching more posts
 Example Request:
 
-bash
 Run
+```
 curl http://localhost:3000/api/instagram/username
-Example Response:
-
-json
-
-{  "success": true,  "data": {    "user": {      "biography": "...",      "followers_count": 1000,      "following_count": 500,      "is_private": false,      "is_verified": true    },    "posts": [...],    "cursor": "next_page_cursor"  }}
-Database Schema
+```
 The API uses the following Supabase tables:
 
 profiles
@@ -96,11 +92,5 @@ The project uses the following development tools:
 nodemon for auto-reloading during development
 Environment variables for configuration
 CORS enabled for cross-origin requests
-License
-This project is licensed under the ISC License.
-
-plaintext
-
-This README provides a comprehensive overview of your Instagram Profile Viewer API, including setup instructions, API documentation, and technical details. Users can easily understand how to set up and use the service.Would you like me to add or modify any specific sections of the documentation?
 
 
